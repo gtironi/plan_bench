@@ -30,6 +30,22 @@ def _strip_null_inputs(inputs):
     return {k: v for k, v in inputs.items() if v is not None}
 
 
+def strip_null_inputs_from_plan(pred):
+    """Shallow copy of plan: each step's inputs dict has keys with value None removed."""
+    if not isinstance(pred, dict):
+        return pred
+    steps = pred.get("steps")
+    if not steps:
+        return pred
+    new_steps = []
+    for s in steps:
+        if not isinstance(s, dict):
+            new_steps.append(s)
+            continue
+        new_steps.append({**s, "inputs": _strip_null_inputs(s.get("inputs"))})
+    return {**pred, "steps": new_steps}
+
+
 def normalize_plan_for_metrics(p):
     """Copy plan for scoring: only action + non-null inputs; metadata stripped."""
     out = []
@@ -38,7 +54,7 @@ def normalize_plan_for_metrics(p):
             continue
         out.append({
             "action": s.get("action"),
-            "inputs": _strip_null_inputs(s.get("inputs") or {}),
+            "inputs": _strip_null_inputs(s.get("inputs")),
         })
     return {"steps": out}
 

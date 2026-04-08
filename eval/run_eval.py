@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from approaches import ALL, BY_NAME
-from eval.metrics import score, METRIC_KEYS, diagnose_pred_vs_gold
+from eval.metrics import score, METRIC_KEYS, diagnose_pred_vs_gold, strip_null_inputs_from_plan
 
 DATASET = os.path.join(os.path.dirname(__file__), "..", "dataset", "out", "dataset.jsonl")
 OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
@@ -198,6 +198,8 @@ def main():
                     pred = a.predict(text, exclude_id=item.get("id"))
                 else:
                     pred = a.predict(text)
+                pred = strip_null_inputs_from_plan(pred)
+
                 _log_pred(a.name, text, pred, gold)
                 s = score(pred, gold)
                 row = {"approach": a.name, **s}
