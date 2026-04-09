@@ -1,10 +1,12 @@
 """Decomposed extractors: travelers, flights, hotels separately, then merge."""
 import json
 import sys, os
+from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import client, MODEL_MAIN
 from approaches.base import Approach
+from schema import validate_plan
 
 TRAVELERS_SCHEMA = {
     "name": "travelers", "strict": True,
@@ -20,17 +22,18 @@ TRAVELERS_SCHEMA = {
 FLIGHTS_SCHEMA = {
     "name": "flights", "strict": True,
     "schema": {
-        "type": "object", "additionalProperties": False, "required": ["trip_type", "flights"],
+        "type": "object", "additionalProperties": False, "required": ["flights"],
         "properties": {
-            "trip_type": {"type": "string", "enum": ["one_way", "round_trip", "multi_city", "hotel_only", "flight_only"]},
             "flights": {"type": "array", "items": {
                 "type": "object", "additionalProperties": False,
-                "required": ["origin", "destination", "depart_date", "return_date", "traveler_ids", "cabin"],
+                "required": ["leg", "from_airport_code", "to_airport_code", "departure_date", "passengers", "traveler_ids"],
                 "properties": {
-                    "origin": {"type": "string"}, "destination": {"type": "string"},
-                    "depart_date": {"type": "string"}, "return_date": {"type": ["string", "null"]},
+                    "leg": {"type": "integer"},
+                    "from_airport_code": {"type": "string"},
+                    "to_airport_code": {"type": "string"},
+                    "departure_date": {"type": "string"},
+                    "passengers": {"type": "integer"},
                     "traveler_ids": {"type": "array", "items": {"type": "string"}},
-                    "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"]},
                 },
             }},
         },
@@ -43,12 +46,13 @@ HOTELS_SCHEMA = {
         "type": "object", "additionalProperties": False, "required": ["hotels"],
         "properties": {"hotels": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["city_iata", "city_name", "check_in", "check_out", "traveler_ids", "rooms"],
+            "required": ["city", "check_in_date", "number_of_nights", "number_of_guests", "traveler_ids"],
             "properties": {
-                "city_iata": {"type": "string"}, "city_name": {"type": "string"},
-                "check_in": {"type": "string"}, "check_out": {"type": "string"},
+                "city": {"type": "string"},
+                "check_in_date": {"type": "string"},
+                "number_of_nights": {"type": "string"},
+                "number_of_guests": {"type": "string"},
                 "traveler_ids": {"type": "array", "items": {"type": "string"}},
-                "rooms": {"type": "integer"},
             },
         }}},
     },
@@ -64,21 +68,110 @@ def _call(c, system, user, schema):
     return json.loads(r.choices[0].message.content)
 
 
+def _step(action: str, title: str, inputs: dict) -> dict:
+    return {
+        "step_id": 0,  # filled later
+        "action": action,
+        "depends_on": [],  # filled later
+        "enter_guard": "True",
+        "next_step": None,  # filled later
+        "success_criteria": "len(result) > 0",
+        "title": title,
+        "inputs": inputs,
+    }
+
+
+def _relinearize_steps(steps):
+    for i, s in enumerate(steps):
+        s["step_id"] = i
+        s["depends_on"] = [] if i == 0 else [i - 1]
+        s["next_step"] = i + 1 if i < len(steps) - 1 else None
+    return steps
+
+
 class A9Decomposed(Approach):
     name = "a9_decomposed_tools"
 
     def predict(self, text):
         c = client()
-        travs = _call(c, "Extract every traveler mentioned. Use stable ids t1, t2, ... in mention order.", text, TRAVELERS_SCHEMA)
+        today = date.today().isoformat()
+        travs = _call(
+            c,
+            "Extract every traveler mentioned.\n"
+            f"TODAY: {today}\n"
+            "Use stable ids t1, t2, ... in mention order.",
+            text,
+            TRAVELERS_SCHEMA,
+        )
         ctx = f"REQUEST:\n{text}\n\nTRAVELERS:\n{json.dumps(travs, ensure_ascii=False)}"
-        flights = _call(c, "Extract every flight leg. Use 3-letter IATA codes. Reference traveler ids exactly. Pick trip_type.", ctx, FLIGHTS_SCHEMA)
-        hotels = _call(c, "Extract every hotel stay. Use 3-letter IATA city codes. Reference traveler ids exactly.", ctx, HOTELS_SCHEMA)
-        return {
-            "trip_type": flights["trip_type"],
-            "travelers": travs["travelers"],
-            "flights": flights["flights"],
-            "hotels": hotels["hotels"],
-        }
+        flights = _call(
+            c,
+            "Extract every flight leg.\n"
+            f"TODAY: {today}\n"
+            "- Use 3-letter IATA airport codes.\n"
+            "- Output departure_date as YYYY-MM-DD.\n"
+            "- All plan dates must be in the future relative to TODAY (if ambiguous, choose a future date).\n"
+            "- passengers must equal len(traveler_ids).\n"
+            "- leg is 0 for outbound/converging legs, 1 for return/diverging legs.\n"
+            "- Reference traveler ids exactly as given.\n"
+            "- If the request does NOT need flights, return flights=[] (empty array).\n",
+            ctx,
+            FLIGHTS_SCHEMA,
+        )
+        hotels = _call(
+            c,
+            "Extract every hotel stay.\n"
+            f"TODAY: {today}\n"
+            "- Output check_in_date as YYYY-MM-DD.\n"
+            "- All plan dates must be in the future relative to TODAY (if ambiguous, choose a future date).\n"
+            "- city must be a city name (e.g. 'Helsinki', 'Vienna') not an IATA code.\n"
+            "- number_of_nights and number_of_guests must be strings.\n"
+            "- Reference traveler ids exactly as given.\n"
+            "- If the request does NOT need hotels, return hotels=[] (empty array).\n",
+            ctx,
+            HOTELS_SCHEMA,
+        )
+
+        steps = []
+        for f in flights.get("flights") or []:
+            frm = f["from_airport_code"]
+            to = f["to_airport_code"]
+            steps.append(
+                _step(
+                    "quote_flight",
+                    f"{frm} to {to} flight",
+                    {
+                        "leg": int(f["leg"]),
+                        "from_airport_code": frm,
+                        "to_airport_code": to,
+                        "departure_date": f["departure_date"],
+                        "passengers": int(f["passengers"]),
+                        "traveler_ids": f["traveler_ids"],
+                    },
+                )
+            )
+
+        for h in hotels.get("hotels") or []:
+            city = h["city"]
+            steps.append(
+                _step(
+                    "quote_hotel",
+                    f"{city} hotel {h['number_of_nights']} nights ({h['number_of_guests']} guests)",
+                    {
+                        "area": None,
+                        "city": city,
+                        "check_in_date": h["check_in_date"],
+                        "number_of_nights": h["number_of_nights"],
+                        "number_of_guests": h["number_of_guests"],
+                        "traveler_ids": h["traveler_ids"],
+                    },
+                )
+            )
+
+        _relinearize_steps(steps)
+        plan = {"steps": steps}
+        validate_plan(plan)
+        return plan
 
 
 approach = A9Decomposed()
