@@ -12,7 +12,6 @@ STAGE1_SYSTEM = """Decompose a corporate travel request into a flat list of atom
 
 Each sub-goal is one of:
 - "book flight <ORIGIN> -> <DEST> on <DATE> for <NAMES>"
-- "book return flight <ORIGIN> -> <DEST> on <DATE> for <NAMES>"
 - "book hotel in <CITY> from <CHECK_IN> to <CHECK_OUT> for <NAMES> (<ROOMS> rooms)"
 
 List every atom. Dates in ISO. Output as a JSON array of strings under the key "subgoals":
