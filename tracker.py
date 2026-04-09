@@ -1,7 +1,7 @@
 """Real-time usage tracker. Wraps the OpenAI client so every call reports
 actual input/output tokens and accumulates cost. Enforces a hard budget."""
 import sys
-from pricing import PRICING
+from pricing import PRICING, PRICING_FALLBACK
 
 
 class BudgetExceeded(Exception):
@@ -51,9 +51,7 @@ class Tracker:
 
     @staticmethod
     def _cost(model, in_tok, out_tok, cached_tok):
-        p = PRICING.get(model)
-        if not p:
-            return 0.0
+        p = PRICING.get(model, PRICING_FALLBACK)
         in_price, cached_price, out_price = p
         regular_in = in_tok - cached_tok
         total = (regular_in / 1_000_000 * in_price) + (out_tok / 1_000_000 * out_price)

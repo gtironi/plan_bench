@@ -25,10 +25,13 @@ PRICING = {
     "gpt-3.5-turbo": (0.50,   None,    1.50),
 }
 
+# Modelo desconhecido / snapshot: custo conservador para enforced budget (USD por 1M tokens).
+PRICING_FALLBACK = (4.0, None, 10.0)
+
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> float:
     """Return estimated cost in USD."""
-    p = PRICING[model]
+    p = PRICING.get(model, PRICING_FALLBACK)
     input_price, cached_price, output_price = p
     regular_input = input_tokens - cached_tokens
     total = (regular_input / 1_000_000 * input_price) + (output_tokens / 1_000_000 * output_price)
